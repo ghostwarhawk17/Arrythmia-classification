@@ -53,18 +53,10 @@ BEAT_LEN = 260  # from Stage 2 (99 pre + 160 post + 1 R-peak sample)
 # ---------------------------------------------------------------------------
 # 1. LOAD DATA
 # ---------------------------------------------------------------------------
-def load_all_datasets(features_paths):
-    all_beats = []
-    all_labels = []
-    
-    for path in features_paths:
-        data = np.load(path, allow_pickle=True)
-        if len(data['beats']) > 0:
-            all_beats.append(data['beats'])
-            all_labels.append(data['labels'])
-            
-    beats = np.concatenate(all_beats, axis=0)
-    labels = np.concatenate(all_labels, axis=0)
+def load_dataset(features_path):
+    data = np.load(features_path, allow_pickle=True)
+    beats = data['beats']            # (N, 260)
+    labels = data['labels']          # (N,) string labels e.g. 'N','L',...
 
     # Encode labels -> integers -> one-hot
     le = LabelEncoder()
@@ -75,7 +67,7 @@ def load_all_datasets(features_paths):
     # Reshape beats for Conv1D: (N, 260, 1)
     X = beats.reshape(beats.shape[0], BEAT_LEN, 1).astype(np.float32)
 
-    print(f"Combined dataset: X={X.shape}, y={y_onehot.shape}")
+    print(f"Loaded dataset: X={X.shape}, y={y_onehot.shape}")
     print("Class mapping:", dict(zip(le.classes_, range(len(le.classes_)))))
 
     return X, y_onehot, le
@@ -167,11 +159,11 @@ def train_and_evaluate(model, X_train, y_train, X_val, y_val,
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
-def main(features_paths, out_dir):
+def main(features_path, out_dir):
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1. Load all records into one dataset
-    X, y, label_encoder = load_all_datasets(features_paths)
+    # 1. Load
+    X, y, label_encoder = load_dataset(features_path)
 
     # 2. Train/test split (80/20, stratified to preserve class balance)
     X_train, X_val, y_train, y_val = train_test_split(
@@ -213,6 +205,7 @@ def main(features_paths, out_dir):
 
     # 6. Save model + results
     model.save(os.path.join(out_dir, "baseline_cnn.keras"))
+    y_pred_prob_full = model.predict(X_val, verbose=0)
     np.savez(
         os.path.join(out_dir, "baseline_results.npz"),
         confusion_matrix=cm,
@@ -220,6 +213,8 @@ def main(features_paths, out_dir):
         cross_entropy=metrics['cross_entropy'],
         execution_time_min=metrics['execution_time_min'],
         classes=label_encoder.classes_,
+        y_true=metrics['y_true'],
+        y_pred_prob=y_pred_prob_full,
     )
     pd.DataFrame(metrics['history']).to_csv(
         os.path.join(out_dir, "training_history.csv"), index=False
@@ -228,25 +223,10 @@ def main(features_paths, out_dir):
 
 
 if __name__ == "__main__":
-    import glob
-
     parser = argparse.ArgumentParser()
-    parser.add_argument("--features_path", default=None,
-                         help="Path to a single *_features.npz from stage 2. "
-                              "If omitted, all files in --features_dir are used.")
-    parser.add_argument("--features_dir", default="./features",
-                         help="Directory with *_features.npz files (default: %(default)s)")
+    parser.add_argument("--features_path", required=True,
+                         help="Path to *_features.npz from stage 2")
     parser.add_argument("--out_dir", default="./results")
     args = parser.parse_args()
 
-    if args.features_path:
-        features_paths = [args.features_path]
-    else:
-        features_paths = sorted(glob.glob(os.path.join(args.features_dir, "*_features.npz")))
-        if not features_paths:
-            print(f"ERROR: No *_features.npz files found in {args.features_dir}")
-            exit(1)
-        print(f"Found {len(features_paths)} feature files in {args.features_dir}\n")
-
-    main(features_paths, args.out_dir)
-
+    main(args.features_path, args.out_dir)
